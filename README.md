@@ -54,9 +54,13 @@ tile precisa ultrapassar antes de largar o slot atual. Sem ela, parar o dedo em
 cima da fronteira faria o preview piscar entre dois arranjos. Com ela, o preview
 reage no mesmo frame, sem tempo de espera.
 
-Ao soltar, o tile **desliza** da posição em que foi solto até o slot, perdendo
-elevação e escala no caminho. Sem isso o `Draggable` do Flutter simplesmente
-remove o overlay e o tile pula para o lugar.
+O tile arrastado **nunca é desmontado**. O grid não usa `childWhenDragging` —
+trocar o filho desmontaria a subárvore, e remontar reiniciaria o estado que ela
+carrega (um gate assíncrono volta para o ramo pendente, uma animação recomeça).
+O conteúdo fica no lugar, invisível, atrás do placeholder do slot.
+
+A única cópia extra é a que o `Draggable` do Flutter coloca no `Overlay` para
+flutuar sob o dedo; essa é inevitável.
 
 ## Parâmetros
 
@@ -72,7 +76,7 @@ remove o overlay e o tile pula para o lugar.
 | `slotBorderColor` | `colorScheme.outlineVariant` | Cor desse contorno. |
 | `onReorder` | `null` | `(oldIndex, newIndex)` após um drop que mudou a posição. |
 | `borderRadius` | `8.0` | Raio padrão dos tiles (`ReorderGridTile.borderRadius` sobrescreve). |
-| `animationDuration` / `animationCurve` | `220ms` / `easeOutCubic` | Reacomodação dos tiles e voo do tile solto. |
+| `animationDuration` / `animationCurve` | `220ms` / `easeOutCubic` | Reacomodação dos tiles. |
 | `dragHysteresis` | `0.2` | Zona morta, em fração de célula, antes do preview trocar de slot. `0` troca na metade exata. |
 
 ## Limitações conhecidas

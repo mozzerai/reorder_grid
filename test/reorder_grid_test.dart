@@ -20,6 +20,42 @@ ReorderGridTile box(String id, {int width = 1, int height = 1}) {
 
 Finder boxFinder(String id) => find.byKey(ValueKey<String>('box-$id'));
 
+/// Counts how many times a tile's content is mounted and torn down.
+class _MountLog {
+  int mounts = 0;
+  int disposals = 0;
+}
+
+class _LifecycleProbe extends StatefulWidget {
+  const _LifecycleProbe({required this.log});
+
+  final _MountLog log;
+
+  @override
+  State<_LifecycleProbe> createState() => _LifecycleProbeState();
+}
+
+class _LifecycleProbeState extends State<_LifecycleProbe> {
+  @override
+  void initState() {
+    super.initState();
+    widget.log.mounts++;
+  }
+
+  @override
+  void dispose() {
+    widget.log.disposals++;
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ColoredBox(
+    key: const ValueKey<String>('box-d'),
+    color: const Color(0xFF112233),
+    child: const SizedBox.expand(),
+  );
+}
+
 Widget host({
   required List<ReorderGridTile> children,
   double width = 400,
@@ -372,7 +408,7 @@ void main() {
       await tester.pumpAndSettle();
     });
 
-    testWidgets('glides the dropped tile into its slot', (
+    testWidgets('lands the dropped tile in its slot', (
       WidgetTester tester,
     ) async {
       await tester.pumpWidget(
@@ -384,37 +420,79 @@ void main() {
       );
 
       final TestGesture gesture = await beginDrag(tester, 'd');
-      // Releases 10px shy of the slot's corner, so there is a gap to cover.
       await gesture.moveTo(const Offset(60, 60));
       await tester.pumpAndSettle();
       await gesture.up();
-      await tester.pump();
-
-      // Mid-flight the tile is still short of its slot.
-      expect(tester.getTopLeft(boxFinder('d')), isNot(Offset.zero));
-
       await tester.pumpAndSettle();
+
       expect(tester.getTopLeft(boxFinder('d')), Offset.zero);
     });
 
-    testWidgets('skips the flight when released on its slot', (
+    testWidgets('keeps the dragged tile mounted from lift to landing', (
       WidgetTester tester,
     ) async {
+      // A remount restarts whatever state the child holds, which is what makes
+      // async-gated content flash while a tile is picked up and put down. The
+      // grid never unmounts the tile it is carrying: the only extra mount is
+      // the copy Draggable puts in the overlay, which Flutter requires.
+      final _MountLog log = _MountLog();
+
       await tester.pumpWidget(
         host(
           columns: 2,
           width: 200,
-          children: <ReorderGridTile>[box('a'), box('b'), box('c'), box('d')],
+          children: <ReorderGridTile>[
+            box('a'),
+            box('b'),
+            box('c'),
+            ReorderGridTile.count(
+              key: const ValueKey<String>('d'),
+              child: _LifecycleProbe(log: log),
+            ),
+          ],
         ),
       );
+
+      expect(log.mounts, 1);
 
       final TestGesture gesture = await beginDrag(tester, 'd');
       await gesture.moveTo(const Offset(50, 50));
       await tester.pumpAndSettle();
       await gesture.up();
-      await tester.pump();
+      await tester.pumpAndSettle();
 
-      expect(tester.getTopLeft(boxFinder('d')), Offset.zero);
+      // One extra mount for the overlay copy, and that copy is the only thing
+      // disposed. The tile's own state was never torn down.
+      expect(log.mounts, 2);
+      expect(log.disposals, 1);
+    });
+
+    testWidgets('shows the drop placeholder while a tile is carried', (
+      WidgetTester tester,
+    ) async {
+      await tester.pumpWidget(
+        host(
+          columns: 2,
+          width: 200,
+          children: <ReorderGridTile>[box('a'), box('b'), box('c'), box('d')],
+        ),
+      );
+
+      final Finder placeholder = find.descendant(
+        of: find.byType(ReorderGrid),
+        matching: find.byType(DecoratedBox),
+      );
+      expect(placeholder, findsNothing);
+
+      final TestGesture gesture = await beginDrag(tester, 'd');
+      await tester.pumpAndSettle();
+
+      expect(placeholder, findsOneWidget);
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(placeholder, findsNothing);
     });
 
     testWidgets('ignores drags when reordering is disabled', (

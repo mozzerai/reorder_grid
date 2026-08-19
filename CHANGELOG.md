@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.0
+
+Sem mudanca de API.
+
+- **Remove o voo de aterrissagem** introduzido em 0.3.0. Ele renderizava uma
+  copia do tile e escondia o original, o que montava a subarvore do filho mais
+  uma vez a cada drop.
+- **O tile arrastado nunca e desmontado.** `childWhenDragging` deixou de ser
+  usado: trocar o filho desmonta a subarvore, e remontar reinicia o estado que
+  ela carrega — gates assincronos voltam para o ramo pendente, animacoes
+  reiniciam. Agora o placeholder e o conteudo coexistem num `Stack` de forma
+  estavel, com o conteudo em `Visibility(maintainState, maintainSize)`.
+
+  Um arraste completo passa de tres montagens do filho para duas; a que sobra
+  e a copia que o `Draggable` poe no `Overlay`, que o Flutter exige.
+  Coberto por `keeps the dragged tile mounted from lift to landing`.
+- Some o `AnimationController` e o `CurvedAnimation` do estado do grid.
+
 ## 0.3.0
 
 Transicoes de reordenacao mais previsiveis e continuas.

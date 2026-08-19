@@ -2,7 +2,7 @@ name: reorder_grid
 description: >
   Layout denso e reordenável para Flutter — empacotamento estável de tiles de
   tamanhos variados, com preview ao vivo durante o arraste.
-version: 0.3.0
+version: 0.4.0
 repository: https://github.com/mozzerai/reorder_grid
 issue_tracker: https://github.com/mozzerai/reorder_grid/issues
 
