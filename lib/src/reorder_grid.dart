@@ -135,15 +135,58 @@ class _ReorderDragData {
   final Key tileKey;
 }
 
-class _ReorderGridState extends State<ReorderGrid> {
+/// Everything a repaint of the grid depends on: which tiles are shown, in which
+/// order, and in which cell.
+@immutable
+class _GridSnapshot {
+  const _GridSnapshot({required this.order, required this.layout});
+
+  static const _GridSnapshot empty = _GridSnapshot(
+    order: <Key>[],
+    layout: GridLayout.empty,
+  );
+
   /// Visual order of the tiles, which drifts from `widget.children` between a
   /// drop and the parent's rebuild.
-  final List<Key> _order = <Key>[];
-
-  Map<Key, ReorderGridTile> _tilesByKey = <Key, ReorderGridTile>{};
+  final List<Key> order;
 
   /// Logical placements. Pixels are derived from these on every build.
-  GridLayout _layout = GridLayout.empty;
+  final GridLayout layout;
+}
+
+/// Holds the current [_GridSnapshot] and rebuilds only the tile stack when it
+/// changes, so a drag preview does not rebuild the surrounding drag target.
+///
+/// Readers must pull [value] inside their builder rather than cache it: a
+/// [setQuietly] update deliberately skips the notification.
+class _GridSnapshotNotifier extends ChangeNotifier {
+  _GridSnapshotNotifier(this._value);
+
+  _GridSnapshot _value;
+
+  _GridSnapshot get value => _value;
+
+  /// Publishes a new snapshot and rebuilds the listeners.
+  set value(_GridSnapshot snapshot) {
+    if (identical(_value, snapshot)) return;
+    _value = snapshot;
+    notifyListeners();
+  }
+
+  /// Replaces the snapshot without notifying.
+  ///
+  /// Used from `initState` and `didUpdateWidget`, where the whole grid is about
+  /// to be rebuilt anyway and a notification would only mark the stack dirty
+  /// twice in the same frame.
+  void setQuietly(_GridSnapshot snapshot) => _value = snapshot;
+}
+
+class _ReorderGridState extends State<ReorderGrid> {
+  final _GridSnapshotNotifier _snapshot = _GridSnapshotNotifier(
+    _GridSnapshot.empty,
+  );
+
+  Map<Key, ReorderGridTile> _tilesByKey = <Key, ReorderGridTile>{};
 
   Key? _draggingKey;
 
@@ -158,11 +201,14 @@ class _ReorderGridState extends State<ReorderGrid> {
 
   Timer? _previewTimer;
 
+  List<Key> get _order => _snapshot.value.order;
+
+  GridLayout get _layout => _snapshot.value.layout;
+
   @override
   void initState() {
     super.initState();
     _adoptChildren();
-    _layout = _pack();
   }
 
   @override
@@ -173,12 +219,11 @@ class _ReorderGridState extends State<ReorderGrid> {
         !_sameStructure(oldWidget.children, widget.children);
 
     if (structureChanged) {
-      // A build is already scheduled, so mutate directly instead of setState.
       _adoptChildren();
-      _layout = _pack();
     } else {
       // Same tiles in the same order: keep our placements (they may be ahead of
-      // the parent right after a drop) and just refresh the child widgets.
+      // the parent right after a drop) and just refresh the child widgets. The
+      // parent's rebuild already carries the new widgets down to the stack.
       _tilesByKey = _indexByKey(widget.children);
     }
   }
@@ -186,6 +231,7 @@ class _ReorderGridState extends State<ReorderGrid> {
   @override
   void dispose() {
     _previewTimer?.cancel();
+    _snapshot.dispose();
     super.dispose();
   }
 
@@ -193,10 +239,13 @@ class _ReorderGridState extends State<ReorderGrid> {
 
   void _adoptChildren() {
     assert(_debugCheckUniqueKeys(widget.children));
-    _order
-      ..clear()
-      ..addAll(widget.children.map((ReorderGridTile tile) => tile.key));
     _tilesByKey = _indexByKey(widget.children);
+    final List<Key> order = <Key>[
+      for (final ReorderGridTile tile in widget.children) tile.key,
+    ];
+    _snapshot.setQuietly(
+      _GridSnapshot(order: order, layout: _packOrder(order)),
+    );
   }
 
   static Map<Key, ReorderGridTile> _indexByKey(List<ReorderGridTile> tiles) => {
@@ -243,12 +292,17 @@ class _ReorderGridState extends State<ReorderGrid> {
 
   GridLayout _pack({
     Map<Key, GridPosition> pinned = const <Key, GridPosition>{},
+  }) => _packOrder(_order, pinned: pinned);
+
+  GridLayout _packOrder(
+    List<Key> order, {
+    Map<Key, GridPosition> pinned = const <Key, GridPosition>{},
   }) {
     return packDense(
       columns: widget.crossAxisCount,
       pinned: pinned,
       tiles: <LayoutTile>[
-        for (final Key key in _order)
+        for (final Key key in order)
           if (_tilesByKey[key] case final ReorderGridTile tile)
             LayoutTile(
               key: key,
@@ -274,7 +328,9 @@ class _ReorderGridState extends State<ReorderGrid> {
     _restingLayout = _layout;
     _appliedAnchor = null;
     _pendingAnchor = null;
-    setState(() => _draggingKey = key);
+    // No rebuild: the dragged tile is swapped for its placeholder by
+    // LongPressDraggable itself, so nothing in the stack depends on this.
+    _draggingKey = key;
     _haptic(HapticFeedback.mediumImpact);
   }
 
@@ -297,7 +353,7 @@ class _ReorderGridState extends State<ReorderGrid> {
       if (!mounted || _draggingKey != key) return;
       _appliedAnchor = anchor;
       _pendingAnchor = null;
-      setState(() => _layout = _pack(pinned: <Key, GridPosition>{key: anchor}));
+      _publish(layout: _pack(pinned: <Key, GridPosition>{key: anchor}));
       _haptic(HapticFeedback.selectionClick);
     });
   }
@@ -309,9 +365,7 @@ class _ReorderGridState extends State<ReorderGrid> {
     _pendingAnchor = null;
     _appliedAnchor = null;
     final GridLayout? resting = _restingLayout;
-    if (resting != null && !identical(resting, _layout)) {
-      setState(() => _layout = resting);
-    }
+    if (resting != null) _publish(layout: resting);
   }
 
   /// Ends the drag. Fired by `Draggable.onDragEnd`, which runs after a
@@ -322,10 +376,8 @@ class _ReorderGridState extends State<ReorderGrid> {
     if (_draggingKey == null && _restingLayout == null) return;
 
     final GridLayout? resting = _restingLayout;
-    setState(() {
-      if (!accepted && resting != null) _layout = resting;
-      _draggingKey = null;
-    });
+    if (!accepted && resting != null) _publish(layout: resting);
+    _draggingKey = null;
     _restingLayout = null;
     _appliedAnchor = null;
     _pendingAnchor = null;
@@ -361,13 +413,8 @@ class _ReorderGridState extends State<ReorderGrid> {
     );
     final int newIndex = newOrder.indexOf(key);
 
-    setState(() {
-      _layout = layout;
-      _order
-        ..clear()
-        ..addAll(newOrder);
-      _draggingKey = null;
-    });
+    _publish(order: newOrder, layout: layout);
+    _draggingKey = null;
     _restingLayout = null;
     _appliedAnchor = null;
     _pendingAnchor = null;
@@ -375,6 +422,16 @@ class _ReorderGridState extends State<ReorderGrid> {
     if (oldIndex >= 0 && newIndex >= 0 && oldIndex != newIndex) {
       widget.onReorder?.call(oldIndex, newIndex);
     }
+  }
+
+  /// Publishes a new snapshot, rebuilding only the tile stack.
+  void _publish({List<Key>? order, required GridLayout layout}) {
+    final _GridSnapshot current = _snapshot.value;
+    if (order == null && identical(current.layout, layout)) return;
+    _snapshot.value = _GridSnapshot(
+      order: order ?? current.order,
+      layout: layout,
+    );
   }
 
   GridPosition? _cellFromGlobal(Offset globalOffset, GridGeometry geometry) {
@@ -413,16 +470,28 @@ class _ReorderGridState extends State<ReorderGrid> {
           cellAspectRatio: widget.cellAspectRatio,
         );
 
-        final Widget grid = SizedBox(
-          width: constraints.maxWidth,
-          height: geometry.totalHeight(_layout.rows),
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: <Widget>[
-              if (widget.showSlotBorders) _buildSlotBorders(context, geometry),
-              for (final Key key in _order) _buildTile(context, key, geometry),
-            ],
-          ),
+        // Only the stack listens to the snapshot, so a drag preview leaves the
+        // drag target and the layout builder untouched. The snapshot is read
+        // here, inside the builder, so a quiet update still lands on the next
+        // rebuild of the grid.
+        final Widget grid = ListenableBuilder(
+          listenable: _snapshot,
+          builder: (BuildContext context, Widget? child) {
+            final _GridSnapshot snapshot = _snapshot.value;
+            return SizedBox(
+              width: constraints.maxWidth,
+              height: geometry.totalHeight(snapshot.layout.rows),
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: <Widget>[
+                  if (widget.showSlotBorders)
+                    _buildSlotBorders(context, geometry, snapshot),
+                  for (final Key key in snapshot.order)
+                    _buildTile(context, key, geometry, snapshot.layout),
+                ],
+              ),
+            );
+          },
         );
 
         if (!widget.enableReorder) return grid;
@@ -446,9 +515,14 @@ class _ReorderGridState extends State<ReorderGrid> {
     );
   }
 
-  Widget _buildTile(BuildContext context, Key key, GridGeometry geometry) {
+  Widget _buildTile(
+    BuildContext context,
+    Key key,
+    GridGeometry geometry,
+    GridLayout layout,
+  ) {
     final ReorderGridTile tile = _tilesByKey[key]!;
-    final GridPosition position = _layout[key] ?? kGridOrigin;
+    final GridPosition position = layout[key] ?? kGridOrigin;
     final BorderRadius radius = BorderRadius.circular(
       tile.borderRadius ?? widget.borderRadius,
     );
@@ -513,11 +587,15 @@ class _ReorderGridState extends State<ReorderGrid> {
     );
   }
 
-  Widget _buildSlotBorders(BuildContext context, GridGeometry geometry) {
+  Widget _buildSlotBorders(
+    BuildContext context,
+    GridGeometry geometry,
+    _GridSnapshot snapshot,
+  ) {
     final Set<int> occupied = <int>{};
-    for (final Key key in _order) {
+    for (final Key key in snapshot.order) {
       final ReorderGridTile? tile = _tilesByKey[key];
-      final GridPosition? position = _layout[key];
+      final GridPosition? position = snapshot.layout[key];
       if (tile == null || position == null) continue;
       final int width = _columnSpan(tile);
       final int height = _rowSpan(tile);
@@ -534,7 +612,7 @@ class _ReorderGridState extends State<ReorderGrid> {
           painter: _SlotBorderPainter(
             geometry: geometry,
             columns: widget.crossAxisCount,
-            rows: _layout.rows,
+            rows: snapshot.layout.rows,
             occupied: occupied,
             color:
                 widget.slotBorderColor ??

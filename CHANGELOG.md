@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1
+
+Sem mudanca de API.
+
+- Remove todo `setState` do package. O que dispara repaint (ordem + posicoes)
+  virou um `_GridSnapshot` imutavel atras de um `ChangeNotifier`, e so a
+  `Stack` de tiles escuta, via `ListenableBuilder`. Um preview de arraste
+  deixa de reconstruir o `LayoutBuilder` e o `DragTarget`.
+- `_draggingKey` nao era lido no build — o `setState` no inicio do arraste era
+  um rebuild a toa. Virou atribuicao simples.
+- Atualizacoes vindas de `initState`/`didUpdateWidget` usam `setQuietly`, que
+  nao notifica, porque o grid inteiro ja vai ser reconstruido no mesmo frame.
+
 ## 0.2.0
 
 Reescrita interna do grid. A API pública continua compatível: `ReorderGrid.count`
