@@ -117,8 +117,8 @@ class _OccGrid {
   final List<int> _rowMasks = [];
 
   _OccGrid(this.cols)
-      : assert(cols > 0 && cols <= 62),
-        _fullRowMask = (1 << cols) - 1;
+    : assert(cols > 0 && cols <= 62),
+      _fullRowMask = (1 << cols) - 1;
 
   void _ensureRows(int needed) {
     while (_rowMasks.length < needed) {
@@ -240,8 +240,9 @@ class _ReorderGridState extends State<ReorderGrid> {
   }
 
   void _rebuildTiles() {
-    _internalTiles =
-        widget.children.map(_InternalTile.fromReorderGridTile).toList();
+    _internalTiles = widget.children
+        .map(_InternalTile.fromReorderGridTile)
+        .toList();
     _tileByKey = {for (final t in _internalTiles) t.key: t};
   }
 
@@ -395,13 +396,13 @@ class _ReorderGridState extends State<ReorderGrid> {
         return rowCmp != 0 ? rowCmp : a.value.col.compareTo(b.value.col);
       });
 
-    final newIndex =
-        positionedTiles.indexWhere((entry) => entry.key == draggedKey);
+    final newIndex = positionedTiles.indexWhere(
+      (entry) => entry.key == draggedKey,
+    );
 
     // Apply layout and reorder internal tiles
     _applyLayout(layout);
-    final reordered =
-        positionedTiles.map((e) => _tileByKey[e.key]!).toList();
+    final reordered = positionedTiles.map((e) => _tileByKey[e.key]!).toList();
     _internalTiles = reordered;
     _tileByKey = {for (final t in _internalTiles) t.key: t};
 
@@ -445,7 +446,10 @@ class _ReorderGridState extends State<ReorderGrid> {
     if (rows <= 0) return null;
 
     // Clamp to grid bounds instead of returning null at edges
-    final col = (local.dx / colStride).floor().clamp(0, widget.crossAxisCount - 1);
+    final col = (local.dx / colStride).floor().clamp(
+      0,
+      widget.crossAxisCount - 1,
+    );
     final row = (local.dy / rowStride).floor().clamp(0, rows - 1);
 
     return (row: row, col: col);
@@ -480,8 +484,7 @@ class _ReorderGridState extends State<ReorderGrid> {
 
     final grid = _OccGrid(internalCols);
     final placements = <Key, _GridPos>{};
-    final totalArea =
-        tiles.fold<int>(0, (sum, t) => sum + t.width * t.height);
+    final totalArea = tiles.fold<int>(0, (sum, t) => sum + t.width * t.height);
     final rowsLimit = (totalArea / internalCols).ceil() + tiles.length;
 
     for (final entry in fixed.entries) {
@@ -495,9 +498,7 @@ class _ReorderGridState extends State<ReorderGrid> {
 
     // Preserve list order — tiles are already in the correct sequence
     // (either from widget.children or from a previous reorder)
-    final others = tiles
-        .where((t) => !placements.containsKey(t.key))
-        .toList();
+    final others = tiles.where((t) => !placements.containsKey(t.key)).toList();
 
     for (final tile in others) {
       bool placed = false;
@@ -540,15 +541,15 @@ class _ReorderGridState extends State<ReorderGrid> {
 
         final totalHorizontalSpacing =
             (widget.crossAxisCount - 1) * widget.crossAxisSpacing;
-        _cellWidth = (constraints.maxWidth - totalHorizontalSpacing) /
+        _cellWidth =
+            (constraints.maxWidth - totalHorizontalSpacing) /
             widget.crossAxisCount;
         _cellHeight = _cellWidth;
 
         // Layout pass if any tiles have no pixel positions yet (new or reset)
         final needsLayout = _internalTiles.any((t) => t.pixelWidth == 0);
         if (needsLayout) {
-          final layout =
-              _layoutDense(tiles: _internalTiles, fixed: const {});
+          final layout = _layoutDense(tiles: _internalTiles, fixed: const {});
           if (layout != null) {
             for (final tile in _internalTiles) {
               final pos = layout[tile.key];
@@ -573,8 +574,7 @@ class _ReorderGridState extends State<ReorderGrid> {
           child: Stack(
             clipBehavior: Clip.none,
             children: [
-              ..._internalTiles
-                  .map((tile) => _buildAnimatedTile(tile)),
+              ..._internalTiles.map((tile) => _buildAnimatedTile(tile)),
             ],
           ),
         );
@@ -670,8 +670,9 @@ class _ReorderGridState extends State<ReorderGrid> {
     // During drag: fade out. After drop: appear instantly (no fade-in).
     // Otherwise: normal opacity with animation.
     final opacity = isDragging ? 0.0 : 1.0;
-    final opacityDuration =
-        justDropped ? Duration.zero : const Duration(milliseconds: 200);
+    final opacityDuration = justDropped
+        ? Duration.zero
+        : const Duration(milliseconds: 200);
 
     return AnimatedPositioned(
       duration: widget.animationDuration,
