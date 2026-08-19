@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.3.0
+
+Transicoes de reordenacao mais previsiveis e continuas.
+
+### Breaking
+
+- `previewDelay` foi removido e substituido por `dragHysteresis` (double, em
+  fracao de celula, padrao `0.2`). Nenhum consumidor passava `previewDelay`.
+
+### Mudancas
+
+- **Alvo por arredondamento.** O slot era escolhido com `floor` da quina
+  superior esquerda do tile, entao era preciso arrastar uma celula inteira
+  para o alvo mudar. Agora encaixa no slot mais proximo — troca na metade.
+- **Preview sem espera.** O debounce de 150ms sumiu; o preview reage no mesmo
+  frame. A protecao contra piscar na fronteira virou espacial
+  (`dragHysteresis`) em vez de temporal, o que responde na hora e nao depende
+  da velocidade do dedo. Some junto o `Timer` e o estado `_pendingAnchor`.
+- **Voo de aterrissagem.** O tile solto desliza da posicao de soltura ate o
+  slot, drenando elevacao e escala no caminho, em vez de sumir do overlay e
+  reaparecer no lugar.
+- **Decolagem animada.** O tile arrastado sobe para escala/elevacao em 140ms
+  em vez de ja aparecer levantado.
+- **Curvas.** Padroes passam de `300ms`/`easeInOut` para `220ms`/
+  `easeOutCubic`. `easeInOut` comeca devagar, o que em movimento de objeto le
+  como atraso.
+
+### Interno
+
+- `GridGeometry.snapAnchor` concentra o arredondamento e a zona morta, em Dart
+  puro e coberto por testes.
+- 10 testes novos (60 no total).
+
 ## 0.2.1
 
 Sem mudanca de API.

@@ -27,6 +27,7 @@ Widget host({
   double spacing = 0,
   bool enableReorder = true,
   bool showSlotBorders = false,
+  Duration duration = const Duration(milliseconds: 220),
   ReorderGridCallback? onReorder,
 }) {
   return MaterialApp(
@@ -42,6 +43,7 @@ Widget host({
             enableReorder: enableReorder,
             enableHapticFeedback: false,
             showSlotBorders: showSlotBorders,
+            animationDuration: duration,
             onReorder: onReorder,
             children: children,
           ),
@@ -49,6 +51,16 @@ Widget host({
       ),
     ),
   );
+}
+
+/// Starts a long-press drag on the tile [id] and returns the live gesture.
+Future<TestGesture> beginDrag(WidgetTester tester, String id) async {
+  final TestGesture gesture = await tester.startGesture(
+    tester.getCenter(boxFinder(id)),
+  );
+  await tester.pump(_pastLongPress);
+  await tester.pump();
+  return gesture;
 }
 
 void main() {
@@ -299,6 +311,108 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+
+      expect(tester.getTopLeft(boxFinder('d')), Offset.zero);
+    });
+
+    testWidgets('previews on the very next frame, with no dwell time', (
+      WidgetTester tester,
+    ) async {
+      await tester.pumpWidget(
+        host(
+          columns: 2,
+          width: 200,
+          duration: Duration.zero,
+          children: <ReorderGridTile>[box('a'), box('b'), box('c'), box('d')],
+        ),
+      );
+
+      final TestGesture gesture = await beginDrag(tester, 'd');
+      await gesture.moveTo(const Offset(50, 50));
+      await tester.pump();
+
+      // One frame is enough: nothing waits on a timer.
+      expect(tester.getTopLeft(boxFinder('a')), const Offset(100, 0));
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('snaps to the nearest slot, holding a deadband', (
+      WidgetTester tester,
+    ) async {
+      await tester.pumpWidget(
+        host(
+          columns: 2,
+          width: 200,
+          duration: Duration.zero,
+          children: <ReorderGridTile>[box('a'), box('b'), box('c'), box('d')],
+        ),
+      );
+
+      // 'd' sits bottom-right; 'c' bottom-left marks where the preview is.
+      expect(tester.getTopLeft(boxFinder('c')), const Offset(0, 100));
+
+      // Pressing the centre of 'd' anchors the drag 50px into the tile.
+      final TestGesture gesture = await beginDrag(tester, 'd');
+
+      // Tile top-left lands at x=40, i.e. 0.4 of a cell — past the midpoint
+      // of nothing yet, so the anchor stays put.
+      await gesture.moveTo(const Offset(90, 150));
+      await tester.pump();
+      expect(tester.getTopLeft(boxFinder('c')), const Offset(0, 100));
+
+      // x=25 is 0.25 of a cell: clear of the 0.5 + 0.2 deadband, so 'd' takes
+      // the left slot and pushes 'c' across.
+      await gesture.moveTo(const Offset(75, 150));
+      await tester.pump();
+      expect(tester.getTopLeft(boxFinder('c')), const Offset(100, 100));
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('glides the dropped tile into its slot', (
+      WidgetTester tester,
+    ) async {
+      await tester.pumpWidget(
+        host(
+          columns: 2,
+          width: 200,
+          children: <ReorderGridTile>[box('a'), box('b'), box('c'), box('d')],
+        ),
+      );
+
+      final TestGesture gesture = await beginDrag(tester, 'd');
+      // Releases 10px shy of the slot's corner, so there is a gap to cover.
+      await gesture.moveTo(const Offset(60, 60));
+      await tester.pumpAndSettle();
+      await gesture.up();
+      await tester.pump();
+
+      // Mid-flight the tile is still short of its slot.
+      expect(tester.getTopLeft(boxFinder('d')), isNot(Offset.zero));
+
+      await tester.pumpAndSettle();
+      expect(tester.getTopLeft(boxFinder('d')), Offset.zero);
+    });
+
+    testWidgets('skips the flight when released on its slot', (
+      WidgetTester tester,
+    ) async {
+      await tester.pumpWidget(
+        host(
+          columns: 2,
+          width: 200,
+          children: <ReorderGridTile>[box('a'), box('b'), box('c'), box('d')],
+        ),
+      );
+
+      final TestGesture gesture = await beginDrag(tester, 'd');
+      await gesture.moveTo(const Offset(50, 50));
+      await tester.pumpAndSettle();
+      await gesture.up();
+      await tester.pump();
 
       expect(tester.getTopLeft(boxFinder('d')), Offset.zero);
     });

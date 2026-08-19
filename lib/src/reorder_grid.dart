@@ -16,6 +16,10 @@ const double _kFeedbackScale = 1.05;
 /// Elevation of the floating tile while dragging.
 const double _kFeedbackElevation = 8.0;
 
+/// How long the tile takes to lift off when a drag starts, and to settle back
+/// down when it lands.
+const Duration _kLiftDuration = Duration(milliseconds: 140);
+
 /// Signature of the callback invoked once a tile lands in a new slot.
 ///
 /// Indices refer to positions in the `children` list, in reading order.
@@ -67,11 +71,15 @@ class ReorderGrid extends StatefulWidget {
     this.slotBorderColor,
     this.onReorder,
     this.borderRadius = 8.0,
-    this.animationDuration = const Duration(milliseconds: 300),
-    this.animationCurve = Curves.easeInOut,
-    this.previewDelay = const Duration(milliseconds: 150),
+    this.animationDuration = const Duration(milliseconds: 220),
+    this.animationCurve = Curves.easeOutCubic,
+    this.dragHysteresis = 0.2,
   }) : assert(crossAxisCount > 0, 'crossAxisCount must be greater than zero'),
-       assert(cellAspectRatio > 0, 'cellAspectRatio must be greater than zero');
+       assert(cellAspectRatio > 0, 'cellAspectRatio must be greater than zero'),
+       assert(
+         dragHysteresis >= 0 && dragHysteresis < 0.5,
+         'dragHysteresis must be within [0, 0.5)',
+       );
 
   /// Number of columns the grid is divided into.
   final int crossAxisCount;
@@ -111,15 +119,20 @@ class ReorderGrid extends StatefulWidget {
   /// Corner radius applied to tiles that do not define their own.
   final double borderRadius;
 
-  /// Duration of the reflow animation when tiles change slot.
+  /// Duration of the reflow animation when tiles change slot, and of the
+  /// dropped tile's flight to its final slot.
   final Duration animationDuration;
 
   /// Curve of the reflow animation.
   final Curve animationCurve;
 
-  /// How long the pointer must rest over a new cell before the preview
-  /// reflows. Adds hysteresis so large tiles do not thrash between slots.
-  final Duration previewDelay;
+  /// Deadband, as a fraction of a cell, that the dragged tile must overshoot
+  /// before the preview commits to a new slot.
+  ///
+  /// A tile snaps to the nearest slot, so it changes at the halfway point;
+  /// this widens that boundary to stop the preview from flickering when the
+  /// pointer rests on it. `0` disables the deadband; must stay below `0.5`.
+  final double dragHysteresis;
 
   @override
   State<ReorderGrid> createState() => _ReorderGridState();
@@ -135,11 +148,38 @@ class _ReorderDragData {
   final Key tileKey;
 }
 
+/// A tile gliding from where the pointer released it to the slot it landed in.
+///
+/// `Draggable` simply removes its overlay on release, which pops the tile from
+/// under the finger to its slot. Replaying that last hop as an animation is
+/// what makes a drop read as a landing rather than a cut.
+@immutable
+class _DropFlight {
+  const _DropFlight({
+    required this.key,
+    required this.from,
+    required this.to,
+    required this.size,
+  });
+
+  /// The tile in flight.
+  final Key key;
+
+  /// Grid-local top-left where the pointer released the tile.
+  final Offset from;
+
+  /// Grid-local top-left of the slot it landed in.
+  final Offset to;
+
+  /// Pixel size of the tile, held constant during the flight.
+  final Size size;
+}
+
 /// Everything a repaint of the grid depends on: which tiles are shown, in which
-/// order, and in which cell.
+/// order, in which cell, and which one is currently landing.
 @immutable
 class _GridSnapshot {
-  const _GridSnapshot({required this.order, required this.layout});
+  const _GridSnapshot({required this.order, required this.layout, this.flight});
 
   static const _GridSnapshot empty = _GridSnapshot(
     order: <Key>[],
@@ -152,6 +192,9 @@ class _GridSnapshot {
 
   /// Logical placements. Pixels are derived from these on every build.
   final GridLayout layout;
+
+  /// The tile currently gliding to its slot, if any.
+  final _DropFlight? flight;
 }
 
 /// Holds the current [_GridSnapshot] and rebuilds only the tile stack when it
@@ -181,7 +224,8 @@ class _GridSnapshotNotifier extends ChangeNotifier {
   void setQuietly(_GridSnapshot snapshot) => _value = snapshot;
 }
 
-class _ReorderGridState extends State<ReorderGrid> {
+class _ReorderGridState extends State<ReorderGrid>
+    with SingleTickerProviderStateMixin {
   final _GridSnapshotNotifier _snapshot = _GridSnapshotNotifier(
     _GridSnapshot.empty,
   );
@@ -196,10 +240,13 @@ class _ReorderGridState extends State<ReorderGrid> {
   /// Cell the preview is currently pinned to.
   GridPosition? _appliedAnchor;
 
-  /// Cell waiting out [ReorderGrid.previewDelay] before becoming the preview.
-  GridPosition? _pendingAnchor;
+  /// Drives the dropped tile's flight to its slot.
+  late final AnimationController _dropController;
 
-  Timer? _previewTimer;
+  /// [_dropController] shaped by [ReorderGrid.animationCurve]. Held as a field
+  /// rather than rebuilt: every `CurvedAnimation` registers a listener on its
+  /// parent, so building one per frame would leak them onto the controller.
+  late CurvedAnimation _dropProgress;
 
   List<Key> get _order => _snapshot.value.order;
 
@@ -208,12 +255,30 @@ class _ReorderGridState extends State<ReorderGrid> {
   @override
   void initState() {
     super.initState();
+    _dropController = AnimationController(
+      vsync: this,
+      duration: widget.animationDuration,
+    )..addStatusListener(_onDropStatus);
+    _dropProgress = CurvedAnimation(
+      parent: _dropController,
+      curve: widget.animationCurve,
+    );
     _adoptChildren();
   }
 
   @override
   void didUpdateWidget(covariant ReorderGrid oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.animationDuration != oldWidget.animationDuration) {
+      _dropController.duration = widget.animationDuration;
+    }
+    if (widget.animationCurve != oldWidget.animationCurve) {
+      _dropProgress.dispose();
+      _dropProgress = CurvedAnimation(
+        parent: _dropController,
+        curve: widget.animationCurve,
+      );
+    }
     final bool structureChanged =
         widget.crossAxisCount != oldWidget.crossAxisCount ||
         !_sameStructure(oldWidget.children, widget.children);
@@ -230,7 +295,8 @@ class _ReorderGridState extends State<ReorderGrid> {
 
   @override
   void dispose() {
-    _previewTimer?.cancel();
+    _dropProgress.dispose();
+    _dropController.dispose();
     _snapshot.dispose();
     super.dispose();
   }
@@ -243,8 +309,16 @@ class _ReorderGridState extends State<ReorderGrid> {
     final List<Key> order = <Key>[
       for (final ReorderGridTile tile in widget.children) tile.key,
     ];
+    // A tile that left the grid mid-flight has nothing left to land on.
+    final _DropFlight? flight = _snapshot.value.flight;
     _snapshot.setQuietly(
-      _GridSnapshot(order: order, layout: _packOrder(order)),
+      _GridSnapshot(
+        order: order,
+        layout: _packOrder(order),
+        flight: flight != null && _tilesByKey.containsKey(flight.key)
+            ? flight
+            : null,
+      ),
     );
   }
 
@@ -324,45 +398,30 @@ class _ReorderGridState extends State<ReorderGrid> {
   // ── Drag lifecycle ──────────────────────────────────────────────────────
 
   void _onDragStarted(Key key) {
-    _previewTimer?.cancel();
+    _cancelFlight();
     _restingLayout = _layout;
     _appliedAnchor = null;
-    _pendingAnchor = null;
     // No rebuild: the dragged tile is swapped for its placeholder by
     // LongPressDraggable itself, so nothing in the stack depends on this.
     _draggingKey = key;
     _haptic(HapticFeedback.mediumImpact);
   }
 
-  void _onHover(GridPosition position) {
+  void _onHover(GridPosition anchor) {
     final Key? key = _draggingKey;
     if (key == null) return;
 
-    final GridPosition anchor = _clampAnchor(position, key);
-    if (anchor == _appliedAnchor) {
-      // Back where the preview already is: drop any pending move.
-      _previewTimer?.cancel();
-      _pendingAnchor = null;
-      return;
-    }
-    if (anchor == _pendingAnchor) return;
+    final GridPosition clamped = _clampAnchor(anchor, key);
+    if (clamped == _appliedAnchor) return;
 
-    _pendingAnchor = anchor;
-    _previewTimer?.cancel();
-    _previewTimer = Timer(widget.previewDelay, () {
-      if (!mounted || _draggingKey != key) return;
-      _appliedAnchor = anchor;
-      _pendingAnchor = null;
-      _publish(layout: _pack(pinned: <Key, GridPosition>{key: anchor}));
-      _haptic(HapticFeedback.selectionClick);
-    });
+    _appliedAnchor = clamped;
+    _publish(layout: _pack(pinned: <Key, GridPosition>{key: clamped}));
+    _haptic(HapticFeedback.selectionClick);
   }
 
   /// Restores the pre-drag arrangement while keeping the drag alive, used when
   /// the pointer wanders outside the grid.
   void _revertPreview() {
-    _previewTimer?.cancel();
-    _pendingAnchor = null;
     _appliedAnchor = null;
     final GridLayout? resting = _restingLayout;
     if (resting != null) _publish(layout: resting);
@@ -372,7 +431,6 @@ class _ReorderGridState extends State<ReorderGrid> {
   /// successful drop, so [accepted] tells us whether [_handleDrop] already
   /// committed a new arrangement.
   void _endDrag({required bool accepted}) {
-    _previewTimer?.cancel();
     if (_draggingKey == null && _restingLayout == null) return;
 
     final GridLayout? resting = _restingLayout;
@@ -380,24 +438,20 @@ class _ReorderGridState extends State<ReorderGrid> {
     _draggingKey = null;
     _restingLayout = null;
     _appliedAnchor = null;
-    _pendingAnchor = null;
   }
 
   void _handleDrop(Key key, Offset globalOffset, GridGeometry geometry) {
-    _previewTimer?.cancel();
-
+    final Offset? releasedAt = _toLocal(globalOffset);
     final GridPosition? target =
         _appliedAnchor ??
-        _pendingAnchor ??
-        _cellFromGlobal(globalOffset, geometry);
+        (releasedAt == null ? null : _anchorAt(releasedAt, geometry));
     if (target == null) {
       _endDrag(accepted: false);
       return;
     }
 
-    final GridLayout layout = _pack(
-      pinned: <Key, GridPosition>{key: _clampAnchor(target, key)},
-    );
+    final GridPosition landing = _clampAnchor(target, key);
+    final GridLayout layout = _pack(pinned: <Key, GridPosition>{key: landing});
 
     final List<MapEntry<Key, GridPosition>> readingOrder =
         layout.placements.entries.toList()..sort(
@@ -413,37 +467,106 @@ class _ReorderGridState extends State<ReorderGrid> {
     );
     final int newIndex = newOrder.indexOf(key);
 
-    _publish(order: newOrder, layout: layout);
+    _publish(
+      order: newOrder,
+      layout: layout,
+      flight: _flightFor(key, landing, releasedAt, geometry),
+    );
     _draggingKey = null;
     _restingLayout = null;
     _appliedAnchor = null;
-    _pendingAnchor = null;
 
     if (oldIndex >= 0 && newIndex >= 0 && oldIndex != newIndex) {
       widget.onReorder?.call(oldIndex, newIndex);
     }
   }
 
-  /// Publishes a new snapshot, rebuilding only the tile stack.
-  void _publish({List<Key>? order, required GridLayout layout}) {
-    final _GridSnapshot current = _snapshot.value;
-    if (order == null && identical(current.layout, layout)) return;
-    _snapshot.value = _GridSnapshot(
-      order: order ?? current.order,
-      layout: layout,
+  // ── Drop flight ─────────────────────────────────────────────────────────
+
+  /// Builds the landing animation for a tile released at [releasedAt].
+  ///
+  /// Returns `null` when the tile was released close enough to its slot that
+  /// animating would only add latency.
+  _DropFlight? _flightFor(
+    Key key,
+    GridPosition landing,
+    Offset? releasedAt,
+    GridGeometry geometry,
+  ) {
+    final ReorderGridTile? tile = _tilesByKey[key];
+    if (tile == null || releasedAt == null) return null;
+
+    final Offset to = Offset(
+      geometry.leftOf(landing.col),
+      geometry.topOf(landing.row),
+    );
+    if ((releasedAt - to).distance < 1.0) return null;
+
+    _dropController.forward(from: 0.0);
+    return _DropFlight(
+      key: key,
+      from: releasedAt,
+      to: to,
+      size: Size(
+        geometry.widthOf(_columnSpan(tile)),
+        geometry.heightOf(_rowSpan(tile)),
+      ),
     );
   }
 
-  GridPosition? _cellFromGlobal(Offset globalOffset, GridGeometry geometry) {
-    final RenderBox? box = context.findRenderObject() as RenderBox?;
-    if (box == null || !box.hasSize) return null;
-    // One row past the bottom stays addressable so a tile can be dropped into a
-    // brand-new last row.
-    return geometry.cellAt(
-      box.globalToLocal(globalOffset),
-      rows: _layout.rows + 1,
+  void _onDropStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed) return;
+    final _GridSnapshot current = _snapshot.value;
+    if (current.flight == null) return;
+    _snapshot.value = _GridSnapshot(
+      order: current.order,
+      layout: current.layout,
     );
   }
+
+  void _cancelFlight() {
+    _dropController.stop();
+    final _GridSnapshot current = _snapshot.value;
+    if (current.flight == null) return;
+    _snapshot.value = _GridSnapshot(
+      order: current.order,
+      layout: current.layout,
+    );
+  }
+
+  /// Publishes a new snapshot, rebuilding only the tile stack.
+  void _publish({
+    List<Key>? order,
+    required GridLayout layout,
+    _DropFlight? flight,
+  }) {
+    final _GridSnapshot current = _snapshot.value;
+    if (order == null &&
+        flight == null &&
+        current.flight == null &&
+        identical(current.layout, layout)) {
+      return;
+    }
+    _snapshot.value = _GridSnapshot(
+      order: order ?? current.order,
+      layout: layout,
+      flight: flight,
+    );
+  }
+
+  Offset? _toLocal(Offset globalOffset) {
+    final RenderBox? box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return null;
+    return box.globalToLocal(globalOffset);
+  }
+
+  /// Snaps the dragged tile's top-left to the slot it should take.
+  GridPosition? _anchorAt(Offset local, GridGeometry geometry) =>
+      geometry.snapAnchor(
+        local,
+        current: _appliedAnchor,
+        hysteresis: widget.dragHysteresis,
+      );
 
   void _haptic(Future<void> Function() impact) {
     if (widget.enableHapticFeedback) unawaited(impact());
@@ -487,7 +610,12 @@ class _ReorderGridState extends State<ReorderGrid> {
                   if (widget.showSlotBorders)
                     _buildSlotBorders(context, geometry, snapshot),
                   for (final Key key in snapshot.order)
-                    _buildTile(context, key, geometry, snapshot.layout),
+                    if (key != snapshot.flight?.key)
+                      _buildTile(context, key, geometry, snapshot.layout),
+                  // The landing tile is painted last so it glides over the
+                  // ones reflowing underneath it.
+                  if (snapshot.flight case final _DropFlight flight)
+                    _buildFlight(context, flight),
                 ],
               ),
             );
@@ -505,8 +633,10 @@ class _ReorderGridState extends State<ReorderGrid> {
       onWillAcceptWithDetails: (DragTargetDetails<_ReorderDragData> details) =>
           identical(details.data.owner, this),
       onMove: (DragTargetDetails<_ReorderDragData> details) {
-        final GridPosition? cell = _cellFromGlobal(details.offset, geometry);
-        if (cell != null) _onHover(cell);
+        final Offset? local = _toLocal(details.offset);
+        if (local == null) return;
+        final GridPosition? anchor = _anchorAt(local, geometry);
+        if (anchor != null) _onHover(anchor);
       },
       onAcceptWithDetails: (DragTargetDetails<_ReorderDragData> details) =>
           _handleDrop(details.data.tileKey, details.offset, geometry),
@@ -555,6 +685,10 @@ class _ReorderGridState extends State<ReorderGrid> {
     );
   }
 
+  /// The tile floating under the pointer.
+  ///
+  /// It eases into its raised state instead of appearing already lifted, which
+  /// is what signals "you picked this up" rather than "this blinked".
   Widget _buildFeedback(
     Widget content,
     double width,
@@ -564,15 +698,62 @@ class _ReorderGridState extends State<ReorderGrid> {
     return SizedBox(
       width: width,
       height: height,
-      child: Transform.scale(
-        scale: _kFeedbackScale,
-        child: Material(
-          elevation: _kFeedbackElevation,
-          color: Colors.transparent,
-          borderRadius: radius,
-          child: content,
-        ),
+      child: TweenAnimationBuilder<double>(
+        tween: Tween<double>(begin: 0.0, end: 1.0),
+        duration: _kLiftDuration,
+        curve: Curves.easeOutCubic,
+        builder: (BuildContext context, double lift, Widget? child) {
+          return Transform.scale(
+            scale: 1.0 + (_kFeedbackScale - 1.0) * lift,
+            child: Material(
+              elevation: _kFeedbackElevation * lift,
+              color: Colors.transparent,
+              borderRadius: radius,
+              child: child,
+            ),
+          );
+        },
+        child: content,
       ),
+    );
+  }
+
+  /// The dropped tile gliding from where it was released into its slot, easing
+  /// its lift away as it lands.
+  Widget _buildFlight(BuildContext context, _DropFlight flight) {
+    final ReorderGridTile? tile = _tilesByKey[flight.key];
+    if (tile == null) return const SizedBox.shrink();
+
+    final BorderRadius radius = BorderRadius.circular(
+      tile.borderRadius ?? widget.borderRadius,
+    );
+    return AnimatedBuilder(
+      animation: _dropProgress,
+      child: ClipRRect(borderRadius: radius, child: tile.child),
+      builder: (BuildContext context, Widget? child) {
+        final double t = _dropProgress.value;
+        final Offset position = Offset.lerp(flight.from, flight.to, t)!;
+        // The lift drains over the first half of the flight so the tile is
+        // already flat by the time it settles.
+        final double lift = (1.0 - t * 2).clamp(0.0, 1.0);
+        return Positioned(
+          left: position.dx,
+          top: position.dy,
+          width: flight.size.width,
+          height: flight.size.height,
+          child: IgnorePointer(
+            child: Transform.scale(
+              scale: 1.0 + (_kFeedbackScale - 1.0) * lift,
+              child: Material(
+                elevation: _kFeedbackElevation * lift,
+                color: Colors.transparent,
+                borderRadius: radius,
+                child: child,
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 

@@ -43,6 +43,21 @@ Durante o arraste o tile em movimento é fixado sob o ponteiro e os demais são
 reempacotados ao redor. Soltar confirma o preview e dispara `onReorder` com os
 índices em ordem de leitura; soltar fora do grid restaura o arranjo anterior.
 
+## Como o arraste responde
+
+O tile **encaixa no slot mais próximo**: a troca acontece quando ele passa da
+metade da célula, não quando cobre a célula inteira. Isso é o que faz o alvo
+coincidir com a intuição de onde o tile "está".
+
+Em cima disso vem `dragHysteresis` — uma zona morta (padrão: 0,2 célula) que o
+tile precisa ultrapassar antes de largar o slot atual. Sem ela, parar o dedo em
+cima da fronteira faria o preview piscar entre dois arranjos. Com ela, o preview
+reage no mesmo frame, sem tempo de espera.
+
+Ao soltar, o tile **desliza** da posição em que foi solto até o slot, perdendo
+elevação e escala no caminho. Sem isso o `Draggable` do Flutter simplesmente
+remove o overlay e o tile pula para o lugar.
+
 ## Parâmetros
 
 | Parâmetro | Padrão | Descrição |
@@ -57,8 +72,8 @@ reempacotados ao redor. Soltar confirma o preview e dispara `onReorder` com os
 | `slotBorderColor` | `colorScheme.outlineVariant` | Cor desse contorno. |
 | `onReorder` | `null` | `(oldIndex, newIndex)` após um drop que mudou a posição. |
 | `borderRadius` | `8.0` | Raio padrão dos tiles (`ReorderGridTile.borderRadius` sobrescreve). |
-| `animationDuration` / `animationCurve` | `300ms` / `easeInOut` | Animação de reacomodação. |
-| `previewDelay` | `150ms` | Histerese antes do preview reagir a uma nova célula. |
+| `animationDuration` / `animationCurve` | `220ms` / `easeOutCubic` | Reacomodação dos tiles e voo do tile solto. |
+| `dragHysteresis` | `0.2` | Zona morta, em fração de célula, antes do preview trocar de slot. `0` troca na metade exata. |
 
 ## Limitações conhecidas
 

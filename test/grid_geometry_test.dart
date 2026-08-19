@@ -104,6 +104,67 @@ void main() {
     });
   });
 
+  group('GridGeometry.snapAnchor', () {
+    // cell = 92.5, stride = 102.5.
+    test('should round to the nearest slot with no anchor held', () {
+      final GridGeometry geometry = build();
+
+      expect(geometry.snapAnchor(Offset.zero), (row: 0, col: 0));
+      // 45 / 102.5 = 0.44 -> rounds back to 0.
+      expect(geometry.snapAnchor(const Offset(45, 0)), (row: 0, col: 0));
+      // 60 / 102.5 = 0.59 -> rounds up to 1.
+      expect(geometry.snapAnchor(const Offset(60, 0)), (row: 0, col: 1));
+    });
+
+    test('should hold the current anchor inside the deadband', () {
+      final GridGeometry geometry = build();
+
+      // 0.59 is past the midpoint but short of 0.5 + 0.2.
+      expect(
+        geometry.snapAnchor(const Offset(60, 0), current: (row: 0, col: 0)),
+        (row: 0, col: 0),
+      );
+    });
+
+    test('should leave the current anchor once the deadband is cleared', () {
+      final GridGeometry geometry = build();
+
+      // 75 / 102.5 = 0.73, past 0.5 + 0.2.
+      expect(
+        geometry.snapAnchor(const Offset(75, 0), current: (row: 0, col: 0)),
+        (row: 0, col: 1),
+      );
+    });
+
+    test('should switch at the midpoint when the deadband is disabled', () {
+      final GridGeometry geometry = build();
+
+      expect(
+        geometry.snapAnchor(
+          const Offset(60, 0),
+          current: (row: 0, col: 0),
+          hysteresis: 0,
+        ),
+        (row: 0, col: 1),
+      );
+    });
+
+    test('should jump straight to a distant slot', () {
+      final GridGeometry geometry = build();
+
+      expect(
+        geometry.snapAnchor(const Offset(310, 210), current: (row: 0, col: 0)),
+        (row: 2, col: 3),
+      );
+    });
+
+    test('should return null for a degenerate grid', () {
+      final GridGeometry geometry = build(width: 5, columns: 4, spacing: 20);
+
+      expect(geometry.snapAnchor(Offset.zero), isNull);
+    });
+  });
+
   group('GridGeometry equality', () {
     test('should compare by value', () {
       expect(build(), build());

@@ -97,6 +97,44 @@ class GridGeometry {
     return (row: row, col: col);
   }
 
+  /// Snaps a block's top-left [offset] to the cell it should occupy.
+  ///
+  /// Unlike [cellAt] this rounds instead of flooring, so a tile changes slot
+  /// once it has travelled past the halfway point rather than a whole cell.
+  ///
+  /// [current] is the anchor already in use. While it is set, the result only
+  /// leaves it after the offset overshoots the midpoint by [hysteresis] of a
+  /// cell — a deadband that stops the preview from flickering between two
+  /// slots when the pointer rests on a boundary.
+  ///
+  /// Returns `null` when the geometry is degenerate.
+  GridPosition? snapAnchor(
+    Offset offset, {
+    GridPosition? current,
+    double hysteresis = 0.2,
+  }) {
+    if (cellWidth <= 0 || cellHeight <= 0) return null;
+    return (
+      row: _snap(
+        offset.dy / (cellHeight + mainAxisSpacing),
+        current?.row,
+        hysteresis,
+      ),
+      col: _snap(
+        offset.dx / (cellWidth + crossAxisSpacing),
+        current?.col,
+        hysteresis,
+      ),
+    );
+  }
+
+  static int _snap(double value, int? current, double hysteresis) {
+    if (current == null) return value.round();
+    return (value - current).abs() >= 0.5 + hysteresis
+        ? value.round()
+        : current;
+  }
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
