@@ -1,0 +1,58 @@
+# Changelog
+
+## 0.2.0
+
+Reescrita interna do grid. A API pública continua compatível: `ReorderGrid.count`
+e `ReorderGridTile.count` mantêm todos os parâmetros anteriores.
+
+### Correções
+
+- **Grid não reagia a mudança de largura.** As posições eram guardadas em pixels
+  e só eram recalculadas quando `crossAxisCount` mudava, então redimensionar a
+  janela (ou mudar `mainAxisSpacing`/`crossAxisSpacing`) deixava os tiles com a
+  geometria antiga. Agora as posições são células e o pixel é derivado a cada
+  build.
+- **`childWhenDragging` nunca aparecia.** O tile arrastado era envolvido por um
+  `AnimatedOpacity(opacity: 0)`, que também escondia o placeholder do slot de
+  destino.
+- **Animações trocavam de tile ao reordenar.** Os `AnimatedPositioned` não tinham
+  key, então o estado da animação seguia o índice na `Stack` em vez do tile.
+- **Tile mais largo que o grid apagava a tela inteira.** O empacotamento
+  retornava `null` e nenhum tile recebia posição; agora o span é estreitado.
+- **Reflow a cada rebuild do pai.** `ReorderGridTile.==` comparava o `child`, que
+  quase nunca é igual entre builds, disparando um relayout completo em qualquer
+  rebuild de ancestral. A comparação agora é estrutural (key + spans).
+- **Dois grids na mesma tela trocavam tiles.** O payload do arraste era um `Key`
+  cru, aceito por qualquer `DragTarget<Key>`; agora carrega a identidade do grid
+  de origem.
+- **Keys duplicadas faziam tiles sumirem em silêncio.** Passaram a lançar
+  `FlutterError` em debug.
+- Corrida entre `onDragEnd` e `onAcceptWithDetails` resolvida via
+  `DraggableDetails.wasAccepted`, eliminando o flag `_dropHandled` e dois
+  `addPostFrameCallback` com `setState`.
+
+### Novidades
+
+- `showSlotBorders` foi implementado (era um parâmetro morto) e agora tem
+  padrão `false`.
+- `ReorderGridTile.borderRadius` foi implementado (era um campo morto) e
+  sobrescreve o raio do grid; o tipo passou a ser `double?`.
+- `cellAspectRatio` para células não quadradas.
+- `enableHapticFeedback` para desligar o retorno tátil.
+- `animationCurve` e `previewDelay` configuráveis.
+- `slotBorderColor` para a cor do contorno das células vazias.
+- `ReorderGridCallback` exportado.
+
+### Interno
+
+- Arquivo único de 692 linhas dividido em `lib/src/`: `occupancy_grid.dart`,
+  `dense_layout.dart`, `grid_geometry.dart`, `reorder_grid_tile.dart` e
+  `reorder_grid.dart`. Empacotamento e geometria são Dart puro.
+- 50 testes adicionados (antes: nenhum).
+- Busca de slot livre reescrita sem `sync*` e com salto de linhas saturadas.
+- Lints estritos (`strict-casts`, `strict-inference`, `strict-raw-types`,
+  `public_member_api_docs`).
+
+## 0.0.1
+
+- Versão inicial.
