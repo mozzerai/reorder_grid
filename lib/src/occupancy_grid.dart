@@ -1,4 +1,4 @@
-import 'grid_position.dart';
+import 'package:reorder_grid/src/grid_position.dart';
 
 /// Bitmask-based occupancy map used by the dense packing algorithm.
 ///

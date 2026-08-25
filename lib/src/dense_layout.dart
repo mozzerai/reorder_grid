@@ -2,8 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
-import 'grid_position.dart';
-import 'occupancy_grid.dart';
+import 'package:reorder_grid/src/grid_position.dart';
+import 'package:reorder_grid/src/occupancy_grid.dart';
 
 /// A tile reduced to what the packing algorithm needs: an identity and a span.
 @immutable

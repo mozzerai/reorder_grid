@@ -3,7 +3,7 @@ import 'dart:ui' show Offset;
 
 import 'package:flutter/foundation.dart';
 
-import 'grid_position.dart';
+import 'package:reorder_grid/src/grid_position.dart';
 
 /// Converts between grid cells and pixels for a given set of constraints.
 ///
