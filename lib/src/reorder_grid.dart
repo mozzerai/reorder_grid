@@ -5,10 +5,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
-import 'dense_layout.dart';
-import 'grid_geometry.dart';
-import 'grid_position.dart';
-import 'reorder_grid_tile.dart';
+import 'package:reorder_grid/src/dense_layout.dart';
+import 'package:reorder_grid/src/grid_geometry.dart';
+import 'package:reorder_grid/src/grid_position.dart';
+import 'package:reorder_grid/src/reorder_grid_tile.dart';
 
 /// Scale applied to the tile floating under the pointer while dragging.
 const double _kFeedbackScale = 1.05;
@@ -147,6 +147,41 @@ class _ReorderDragData {
   final Key tileKey;
 }
 
+/// A drag in flight: which tile the pointer carries, what to fall back to if
+/// the drag is abandoned, and where the preview currently pins the tile.
+///
+/// The whole drag lives or dies as one value, so there is no arrangement in
+/// which the grid believes it is carrying a tile it no longer has.
+@immutable
+class _DragSession {
+  const _DragSession({
+    required this.key,
+    required this.restingLayout,
+    this.anchor,
+  });
+
+  /// The tile under the pointer.
+  final Key key;
+
+  /// Arrangement to restore when the drag is cancelled or leaves the grid.
+  final GridLayout restingLayout;
+
+  /// Cell the preview is pinned to, or `null` while the grid shows
+  /// [restingLayout].
+  final GridPosition? anchor;
+
+  /// The same drag previewing at [value]; `null` drops back to the resting
+  /// arrangement without ending the drag.
+  _DragSession withAnchor(GridPosition? value) =>
+      _DragSession(key: key, restingLayout: restingLayout, anchor: value);
+
+  /// The same drag rebased onto a freshly packed [layout], for when the
+  /// children change underneath it. The old anchor described a grid that no
+  /// longer exists, so it is dropped and the next hover re-applies one.
+  _DragSession rebasedOn(GridLayout layout) =>
+      _DragSession(key: key, restingLayout: layout);
+}
+
 /// Everything a repaint of the grid depends on: which tiles are shown, in which
 /// order, in which cell, and which one the pointer is carrying.
 @immutable
@@ -169,7 +204,8 @@ class _GridSnapshot {
   /// Logical placements. Pixels are derived from these on every build.
   final GridLayout layout;
 
-  /// The tile being dragged, drawn as an empty slot until it lands.
+  /// The tile being dragged, drawn as an empty slot until it lands. Always
+  /// mirrors the live drag session; see [_ReorderGridState._publish].
   final Key? draggingKey;
 }
 
@@ -207,13 +243,9 @@ class _ReorderGridState extends State<ReorderGrid> {
 
   Map<Key, ReorderGridTile> _tilesByKey = <Key, ReorderGridTile>{};
 
-  Key? _draggingKey;
-
-  /// Layout to restore when a drag is cancelled or leaves the grid.
-  GridLayout? _restingLayout;
-
-  /// Cell the preview is currently pinned to.
-  GridPosition? _appliedAnchor;
+  /// The drag in flight, or `null` when no tile is being carried. Sole source
+  /// of truth for the drag; the snapshot's `draggingKey` is derived from it.
+  _DragSession? _session;
 
   List<Key> get _order => _snapshot.value.order;
 
@@ -256,14 +288,18 @@ class _ReorderGridState extends State<ReorderGrid> {
     final List<Key> order = <Key>[
       for (final ReorderGridTile tile in widget.children) tile.key,
     ];
-    // A tile that left the grid mid-drag is no longer being carried.
-    final Key? dragging = _snapshot.value.draggingKey;
+    final GridLayout layout = _packOrder(order);
+
+    // A tile that left the grid mid-drag is no longer being carried. One that
+    // stayed keeps its drag, rebased so the layout it would restore describes
+    // the children we just adopted rather than the ones they replaced.
+    final _DragSession? session = _session;
+    _session = session != null && _tilesByKey.containsKey(session.key)
+        ? session.rebasedOn(layout)
+        : null;
+
     _snapshot.setQuietly(
-      _GridSnapshot(
-        order: order,
-        layout: _packOrder(order),
-        draggingKey: _tilesByKey.containsKey(dragging) ? dragging : null,
-      ),
+      _GridSnapshot(order: order, layout: layout, draggingKey: _session?.key),
     );
   }
 
@@ -343,53 +379,49 @@ class _ReorderGridState extends State<ReorderGrid> {
   // ── Drag lifecycle ──────────────────────────────────────────────────────
 
   void _onDragStarted(Key key) {
-    _restingLayout = _layout;
-    _appliedAnchor = null;
-    _draggingKey = key;
-    _publish(layout: _layout, draggingKey: key);
+    _session = _DragSession(key: key, restingLayout: _layout);
+    _publish(layout: _layout);
     _haptic(HapticFeedback.mediumImpact);
   }
 
   void _onHover(GridPosition anchor) {
-    final Key? key = _draggingKey;
-    if (key == null) return;
+    final _DragSession? session = _session;
+    if (session == null) return;
 
-    final GridPosition clamped = _clampAnchor(anchor, key);
-    if (clamped == _appliedAnchor) return;
+    final GridPosition clamped = _clampAnchor(anchor, session.key);
+    if (clamped == session.anchor) return;
 
-    _appliedAnchor = clamped;
-    _publish(
-      layout: _pack(pinned: <Key, GridPosition>{key: clamped}),
-      draggingKey: key,
-    );
+    _session = session.withAnchor(clamped);
+    _publish(layout: _pack(pinned: <Key, GridPosition>{session.key: clamped}));
     _haptic(HapticFeedback.selectionClick);
   }
 
   /// Restores the pre-drag arrangement while keeping the drag alive, used when
   /// the pointer wanders outside the grid.
   void _revertPreview() {
-    _appliedAnchor = null;
-    final GridLayout? resting = _restingLayout;
-    if (resting != null) _publish(layout: resting, draggingKey: _draggingKey);
+    final _DragSession? session = _session;
+    if (session == null) return;
+    _session = session.withAnchor(null);
+    _publish(layout: session.restingLayout);
   }
 
   /// Ends the drag. Fired by `Draggable.onDragEnd`, which runs after a
   /// successful drop, so [accepted] tells us whether [_handleDrop] already
   /// committed a new arrangement.
   void _endDrag({required bool accepted}) {
-    if (_draggingKey == null && _restingLayout == null) return;
+    final _DragSession? session = _session;
+    if (session == null) return;
 
-    final GridLayout? resting = _restingLayout;
-    _publish(layout: !accepted && resting != null ? resting : _layout);
-    _draggingKey = null;
-    _restingLayout = null;
-    _appliedAnchor = null;
+    final GridLayout layout = accepted ? _layout : session.restingLayout;
+    // Cleared before publishing so the snapshot stops reporting a dragged tile.
+    _session = null;
+    _publish(layout: layout);
   }
 
   void _handleDrop(Key key, Offset globalOffset, GridGeometry geometry) {
     final Offset? releasedAt = _toLocal(globalOffset);
     final GridPosition? target =
-        _appliedAnchor ??
+        _session?.anchor ??
         (releasedAt == null ? null : _anchorAt(releasedAt, geometry));
     if (target == null) {
       _endDrag(accepted: false);
@@ -413,10 +445,8 @@ class _ReorderGridState extends State<ReorderGrid> {
     );
     final int newIndex = newOrder.indexOf(key);
 
+    _session = null;
     _publish(order: newOrder, layout: layout);
-    _draggingKey = null;
-    _restingLayout = null;
-    _appliedAnchor = null;
 
     if (oldIndex >= 0 && newIndex >= 0 && oldIndex != newIndex) {
       widget.onReorder?.call(oldIndex, newIndex);
@@ -424,12 +454,12 @@ class _ReorderGridState extends State<ReorderGrid> {
   }
 
   /// Publishes a new snapshot, rebuilding only the tile stack.
-  void _publish({
-    List<Key>? order,
-    required GridLayout layout,
-    Key? draggingKey,
-  }) {
+  ///
+  /// The dragged key is read off [_session] rather than passed in, so the two
+  /// cannot disagree about which tile the pointer is carrying.
+  void _publish({List<Key>? order, required GridLayout layout}) {
     final _GridSnapshot current = _snapshot.value;
+    final Key? draggingKey = _session?.key;
     if (order == null &&
         draggingKey == current.draggingKey &&
         identical(current.layout, layout)) {
@@ -452,7 +482,7 @@ class _ReorderGridState extends State<ReorderGrid> {
   GridPosition? _anchorAt(Offset local, GridGeometry geometry) =>
       geometry.snapAnchor(
         local,
-        current: _appliedAnchor,
+        current: _session?.anchor,
         hysteresis: widget.dragHysteresis,
       );
 

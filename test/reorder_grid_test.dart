@@ -315,6 +315,102 @@ void main() {
       expect(tester.getTopLeft(boxFinder('d')), const Offset(100, 100));
     });
 
+    testWidgets('does not regrow the grid when tiles leave mid-drag', (
+      WidgetTester tester,
+    ) async {
+      await tester.pumpWidget(
+        host(
+          columns: 2,
+          width: 200,
+          children: <ReorderGridTile>[
+            box('a'),
+            box('b'),
+            box('c'),
+            box('d'),
+            box('e'),
+            box('f'),
+          ],
+        ),
+      );
+      expect(tester.getSize(find.byType(ReorderGrid)).height, 300);
+
+      final TestGesture gesture = await beginDrag(tester, 'a');
+      await gesture.moveTo(const Offset(150, 250));
+      await tester.pump(_pastPreview);
+      await tester.pumpAndSettle();
+
+      // The parent empties most of the grid while the drag is still in flight.
+      await tester.pumpWidget(
+        host(
+          columns: 2,
+          width: 200,
+          children: <ReorderGridTile>[box('a'), box('b')],
+        ),
+      );
+      await tester.pump();
+      expect(tester.getSize(find.byType(ReorderGrid)).height, 100);
+
+      // Wandering out of the grid reverts the preview. The arrangement it
+      // reverts to is the two-tile one, not the six-tile one the drag lifted
+      // off from, so the grid must not grow back to three rows.
+      await gesture.moveTo(const Offset(600, 500));
+      await tester.pumpAndSettle();
+
+      expect(tester.getSize(find.byType(ReorderGrid)).height, 100);
+      expect(tester.getTopLeft(boxFinder('b')), const Offset(100, 0));
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(tester.getSize(find.byType(ReorderGrid)).height, 100);
+      expect(tester.getTopLeft(boxFinder('a')), Offset.zero);
+    });
+
+    testWidgets('rebases the resting layout when the children change', (
+      WidgetTester tester,
+    ) async {
+      await tester.pumpWidget(
+        host(
+          columns: 2,
+          width: 200,
+          children: <ReorderGridTile>[box('a'), box('b'), box('c')],
+        ),
+      );
+
+      final TestGesture gesture = await beginDrag(tester, 'c');
+      await gesture.moveTo(const Offset(10, 10));
+      await tester.pump(_pastPreview);
+      await tester.pumpAndSettle();
+      // 'c' is pinned to the origin, so 'a' has flowed out of it. The carried
+      // tile itself is on screen twice — hidden in its slot and floating under
+      // the pointer — so the neighbours are what the preview is read from.
+      expect(tester.getTopLeft(boxFinder('a')), const Offset(100, 0));
+
+      // A tile arrives while the drag is still in flight.
+      await tester.pumpWidget(
+        host(
+          columns: 2,
+          width: 200,
+          children: <ReorderGridTile>[box('a'), box('b'), box('c'), box('d')],
+        ),
+      );
+      await tester.pump();
+
+      // Leaving the grid reverts to the resting arrangement, which must be the
+      // four-tile one adopted mid-drag rather than the three-tile one the drag
+      // started from — otherwise the newcomer has no placement and stacks on
+      // the origin.
+      await gesture.moveTo(const Offset(600, 500));
+      await tester.pumpAndSettle();
+
+      expect(tester.getTopLeft(boxFinder('a')), Offset.zero);
+      expect(tester.getTopLeft(boxFinder('b')), const Offset(100, 0));
+      expect(tester.getTopLeft(boxFinder('d')), const Offset(100, 100));
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(tester.getTopLeft(boxFinder('c')), const Offset(0, 100));
+    });
+
     testWidgets('keeps its own order until the parent catches up', (
       WidgetTester tester,
     ) async {
