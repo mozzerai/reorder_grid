@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0
+
+Sem mudanca de API.
+
+- **Rolagem durante o arraste.** Dentro de um scrollable, levar o dedo a 48 px
+  da borda rola a viewport, de 0 a 900 px/s conforme a profundidade na zona.
+  Um `Ticker` proprio (`EdgeAutoScroller`) avanca a mesma distancia em todo
+  frame; o `EdgeDraggingAutoScroller` do Flutter para um frame a cada tres. A
+  zona segue o ponteiro, nao o tile, porque um card pode ser mais alto que a
+  viewport.
+- **Preview congelado durante a rolagem.** Reempacotar a cada linha que passa
+  sob o dedo fazia os outros cards pularem de um lado para o outro. O preview
+  agora e recalculado uma vez, quando a rolagem para, e o drop mira a posicao
+  real do tile.
+- **Reordenacao por leitor de tela.** Cada tile expoe acoes de acessibilidade
+  "mover para o inicio / para tras / para frente / para o fim", com os textos
+  de `WidgetsLocalizations`. A acao dispara `onReorder` como um drop.
+
 ## 0.4.0
 
 Sem mudanca de API.

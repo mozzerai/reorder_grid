@@ -74,16 +74,42 @@ flutuar sob o dedo; essa é inevitável.
 | `enableHapticFeedback` | `true` | Haptics no início do arraste e a cada mudança de preview. |
 | `showSlotBorders` | `false` | Contorna as células vazias. |
 | `slotBorderColor` | `colorScheme.outlineVariant` | Cor desse contorno. |
-| `onReorder` | `null` | `(oldIndex, newIndex)` após um drop que mudou a posição. |
+| `onReorder` | `null` | `(oldIndex, newIndex)` após um drop ou ação de acessibilidade que mudou a posição. |
 | `borderRadius` | `8.0` | Raio padrão dos tiles (`ReorderGridTile.borderRadius` sobrescreve). |
 | `animationDuration` / `animationCurve` | `220ms` / `easeOutCubic` | Reacomodação dos tiles. |
 | `dragHysteresis` | `0.2` | Zona morta, em fração de célula, antes do preview trocar de slot. `0` troca na metade exata. |
 
+## Rolagem durante o arraste
+
+Dentro de um scrollable, o grid rola sozinho quando o dedo chega a 48 px da
+borda da viewport. A velocidade cresce de zero até 900 px/s conforme o dedo se
+aproxima da borda, e o conteúdo avança **uma vez por frame**, pelo tempo
+decorrido — a mesma distância em todo frame. O `EdgeDraggingAutoScroller` do
+Flutter encadeia uma animação curta por passo e deixa um frame parado a cada
+três, o que aparece como tranco.
+
+A zona segue o **ponteiro**, não o tile: um card do dashboard pode ser mais alto
+que a tela, e um retângulo desse tamanho encostaria nas duas bordas ao mesmo
+tempo.
+
+**O preview fica congelado enquanto a borda rola.** Reempacotar a cada linha que
+passa sob o dedo faria os outros cards pularem de um lado para o outro várias
+vezes por segundo — o empacotamento denso não se move de forma monotônica
+quando o tile fixado desce uma linha. O preview é recalculado uma vez, quando a
+rolagem para (o dedo saiu da zona ou o conteúdo acabou), e soltar no meio da
+rolagem mira a posição real do tile, não o preview congelado.
+
+## Leitor de tela
+
+Cada tile oferece ações de acessibilidade para mover para o início, uma posição
+para trás, uma para frente e para o fim — os mesmos textos do
+`ReorderableListView`, vindos de `WidgetsLocalizations`. A ação move o tile na
+ordem da lista, reempacota o grid e dispara `onReorder` como um drop.
+
 ## Limitações conhecidas
 
-- **Sem reordenação por teclado ou leitor de tela.** O arraste é a única forma
-  de reordenar; telas que precisam de acessibilidade completa devem oferecer um
-  caminho alternativo (ex.: um diálogo de ordenação).
+- **Sem reordenação por teclado.** Leitor de tela usa as ações acima; teclado
+  físico ainda não tem atalhos.
 - **Máximo de 62 colunas**, imposto pelo bitmask de ocupação (uma linha = um
   `int`). Valores maiores são reduzidos.
 - Tiles mais largos que o grid são **estreitados** até a largura total em vez de

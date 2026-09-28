@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:reorder_grid/src/dense_layout.dart';
+import 'package:reorder_grid/src/edge_auto_scroller.dart';
 import 'package:reorder_grid/src/grid_geometry.dart';
 import 'package:reorder_grid/src/grid_position.dart';
 import 'package:reorder_grid/src/reorder_grid_tile.dart';
@@ -113,7 +115,8 @@ class ReorderGrid extends StatefulWidget {
   /// `colorScheme.outlineVariant`.
   final Color? slotBorderColor;
 
-  /// Called after a drop that changed the tile's position.
+  /// Called after a drop, or an accessibility move action, that changed the
+  /// tile's position.
   final ReorderGridCallback? onReorder;
 
   /// Corner radius applied to tiles that do not define their own.
@@ -236,7 +239,8 @@ class _GridSnapshotNotifier extends ChangeNotifier {
   void setQuietly(_GridSnapshot snapshot) => _value = snapshot;
 }
 
-class _ReorderGridState extends State<ReorderGrid> {
+class _ReorderGridState extends State<ReorderGrid>
+    with SingleTickerProviderStateMixin {
   final _GridSnapshotNotifier _snapshot = _GridSnapshotNotifier(
     _GridSnapshot.empty,
   );
@@ -246,6 +250,24 @@ class _ReorderGridState extends State<ReorderGrid> {
   /// The drag in flight, or `null` when no tile is being carried. Sole source
   /// of truth for the drag; the snapshot's `draggingKey` is derived from it.
   _DragSession? _session;
+
+  /// Scrolls the enclosing scrollable while the pointer rests near its edge.
+  late final EdgeAutoScroller _edgeScroller = EdgeAutoScroller(
+    vsync: this,
+    onStopped: _onEdgeScrollStopped,
+  );
+
+  /// Geometry of the last layout pass, used to re-aim the preview once an
+  /// edge scroll stops under a pointer that is not moving.
+  GridGeometry? _geometry;
+
+  /// Global top-left of the floating tile, as last reported by the target.
+  Offset? _feedbackOrigin;
+
+  /// Where the pointer holds the dragged tile, relative to its top-left.
+  /// Constant for the whole drag, so the pointer is always
+  /// [_feedbackOrigin] plus this.
+  Offset? _grabOffset;
 
   List<Key> get _order => _snapshot.value.order;
 
@@ -275,7 +297,14 @@ class _ReorderGridState extends State<ReorderGrid> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _edgeScroller.scrollable = Scrollable.maybeOf(context);
+  }
+
+  @override
   void dispose() {
+    _edgeScroller.dispose();
     _snapshot.dispose();
     super.dispose();
   }
@@ -409,6 +438,7 @@ class _ReorderGridState extends State<ReorderGrid> {
   /// successful drop, so [accepted] tells us whether [_handleDrop] already
   /// committed a new arrangement.
   void _endDrag({required bool accepted}) {
+    _stopAutoScroll();
     final _DragSession? session = _session;
     if (session == null) return;
 
@@ -419,6 +449,8 @@ class _ReorderGridState extends State<ReorderGrid> {
   }
 
   void _handleDrop(Key key, Offset globalOffset, GridGeometry geometry) {
+    _stopAutoScroll();
+    _aimAt(globalOffset, geometry);
     final Offset? releasedAt = _toLocal(globalOffset);
     final GridPosition? target =
         _session?.anchor ??
@@ -445,12 +477,90 @@ class _ReorderGridState extends State<ReorderGrid> {
     );
     final int newIndex = newOrder.indexOf(key);
 
+    _stopAutoScroll();
     _session = null;
     _publish(order: newOrder, layout: layout);
 
     if (oldIndex >= 0 && newIndex >= 0 && oldIndex != newIndex) {
       widget.onReorder?.call(oldIndex, newIndex);
     }
+  }
+
+  /// Moves [key] to [newIndex] in list order, without a drag. Backs the
+  /// accessibility actions, so a screen reader user can reorder too.
+  void _moveTo(Key key, int newIndex) {
+    if (_session != null) return;
+    final List<Key> order = List<Key>.of(_order);
+    final int from = order.indexOf(key);
+    if (from < 0 || from == newIndex) return;
+    order
+      ..removeAt(from)
+      ..insert(newIndex, key);
+    _publish(order: order, layout: _packOrder(order));
+
+    final int oldIndex = widget.children.indexWhere(
+      (ReorderGridTile tile) => tile.key == key,
+    );
+    if (oldIndex >= 0 && oldIndex != newIndex) {
+      widget.onReorder?.call(oldIndex, newIndex);
+    }
+  }
+
+  // ── Auto-scroll ─────────────────────────────────────────────────────────
+
+  /// Records where the pointer holds the tile, using Flutter's default anchor
+  /// so the floating tile still sits exactly where it was picked up.
+  Offset _recordGrab(
+    Draggable<Object> draggable,
+    BuildContext context,
+    Offset position,
+  ) {
+    final Offset grab = childDragAnchorStrategy(draggable, context, position);
+    _grabOffset = grab;
+    return grab;
+  }
+
+  void _onFeedbackMoved(Offset globalOrigin) {
+    _feedbackOrigin = globalOrigin;
+    _aimUnlessEdgeScrolling();
+  }
+
+  void _onPointerMoved(Offset globalPosition) {
+    if (_session == null) return;
+    _edgeScroller.follow(globalPosition);
+  }
+
+  void _onEdgeScrollStopped() {
+    if (_session == null) return;
+    _aimUnlessEdgeScrolling();
+  }
+
+  /// Re-aims the preview at the floating tile, except while the pointer holds
+  /// the scrollable against an edge it can still scroll past.
+  ///
+  /// Re-packing on every row the content slides by makes the other tiles jump
+  /// back and forth several times a second, since a dense layout does not move
+  /// monotonically as the pinned tile does. Holding the preview until the
+  /// scroll stops trades that churn for a single reflow.
+  void _aimUnlessEdgeScrolling() {
+    final Offset? origin = _feedbackOrigin;
+    final GridGeometry? geometry = _geometry;
+    if (origin == null || geometry == null) return;
+    final Offset pointer = origin + (_grabOffset ?? Offset.zero);
+    if (_edgeScroller.velocityAt(pointer) != 0) return;
+    _aimAt(origin, geometry);
+  }
+
+  void _aimAt(Offset globalOrigin, GridGeometry geometry) {
+    final Offset? local = _toLocal(globalOrigin);
+    if (local == null) return;
+    final GridPosition? anchor = _anchorAt(local, geometry);
+    if (anchor != null) _onHover(anchor);
+  }
+
+  void _stopAutoScroll() {
+    _edgeScroller.stop();
+    _feedbackOrigin = null;
   }
 
   /// Publishes a new snapshot, rebuilding only the tile stack.
@@ -510,6 +620,7 @@ class _ReorderGridState extends State<ReorderGrid> {
           crossAxisSpacing: widget.crossAxisSpacing,
           cellAspectRatio: widget.cellAspectRatio,
         );
+        _geometry = geometry;
 
         // Only the stack listens to the snapshot, so a drag preview leaves the
         // drag target and the layout builder untouched. The snapshot is read
@@ -545,15 +656,14 @@ class _ReorderGridState extends State<ReorderGrid> {
     return DragTarget<_ReorderDragData>(
       onWillAcceptWithDetails: (DragTargetDetails<_ReorderDragData> details) =>
           identical(details.data.owner, this),
-      onMove: (DragTargetDetails<_ReorderDragData> details) {
-        final Offset? local = _toLocal(details.offset);
-        if (local == null) return;
-        final GridPosition? anchor = _anchorAt(local, geometry);
-        if (anchor != null) _onHover(anchor);
-      },
+      onMove: (DragTargetDetails<_ReorderDragData> details) =>
+          _onFeedbackMoved(details.offset),
       onAcceptWithDetails: (DragTargetDetails<_ReorderDragData> details) =>
           _handleDrop(details.data.tileKey, details.offset, geometry),
-      onLeave: (_) => _revertPreview(),
+      onLeave: (_) {
+        _feedbackOrigin = null;
+        _revertPreview();
+      },
       builder: (BuildContext context, _, _) => child,
     );
   }
@@ -587,7 +697,10 @@ class _ReorderGridState extends State<ReorderGrid> {
       child: widget.enableReorder
           ? LongPressDraggable<_ReorderDragData>(
               data: _ReorderDragData(owner: this, tileKey: key),
+              dragAnchorStrategy: _recordGrab,
               onDragStarted: () => _onDragStarted(key),
+              onDragUpdate: (DragUpdateDetails details) =>
+                  _onPointerMoved(details.globalPosition),
               onDragEnd: (DraggableDetails details) =>
                   _endDrag(accepted: details.wasAccepted),
               feedback: _buildFeedback(content, width, height, radius),
@@ -596,15 +709,54 @@ class _ReorderGridState extends State<ReorderGrid> {
               // whatever state it holds — async gates re-enter their pending
               // branch, animations replay. The tile stays mounted and is
               // hidden in place instead.
-              child: _hideWhileDragging(
-                context: context,
-                content: content,
-                radius: radius,
-                dragging: snapshot.draggingKey == key,
+              child: Semantics(
+                customSemanticsActions: _moveActions(context, key, snapshot),
+                child: _hideWhileDragging(
+                  context: context,
+                  content: content,
+                  radius: radius,
+                  dragging: snapshot.draggingKey == key,
+                ),
               ),
             )
           : content,
     );
+  }
+
+  /// The moves a screen reader offers for [key], in list order: to the start,
+  /// one back, one forward and to the end, skipping the ones that go nowhere.
+  ///
+  /// Labels come from [WidgetsLocalizations], the same strings
+  /// `ReorderableListView` uses; one step back reads as "left" in a
+  /// left-to-right grid because that is where the previous tile sits.
+  Map<CustomSemanticsAction, VoidCallback> _moveActions(
+    BuildContext context,
+    Key key,
+    _GridSnapshot snapshot,
+  ) {
+    final int index = snapshot.order.indexOf(key);
+    final int last = snapshot.order.length - 1;
+    if (index < 0 || last < 1) {
+      return const <CustomSemanticsAction, VoidCallback>{};
+    }
+
+    final WidgetsLocalizations l10n = WidgetsLocalizations.of(context);
+    final bool rtl = Directionality.of(context) == TextDirection.rtl;
+    final String back = rtl ? l10n.reorderItemRight : l10n.reorderItemLeft;
+    final String forward = rtl ? l10n.reorderItemLeft : l10n.reorderItemRight;
+
+    return <CustomSemanticsAction, VoidCallback>{
+      if (index > 0) ...<CustomSemanticsAction, VoidCallback>{
+        CustomSemanticsAction(label: l10n.reorderItemToStart): () =>
+            _moveTo(key, 0),
+        CustomSemanticsAction(label: back): () => _moveTo(key, index - 1),
+      },
+      if (index < last) ...<CustomSemanticsAction, VoidCallback>{
+        CustomSemanticsAction(label: forward): () => _moveTo(key, index + 1),
+        CustomSemanticsAction(label: l10n.reorderItemToEnd): () =>
+            _moveTo(key, last),
+      },
+    };
   }
 
   /// Shows the drop placeholder in the tile's slot while its content stays

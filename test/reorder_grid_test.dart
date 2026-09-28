@@ -1,3 +1,4 @@
+import 'package:flutter/semantics.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:reorder_grid/reorder_grid.dart';
@@ -627,4 +628,264 @@ void main() {
       expect(tester.getTopLeft(boxFinder('d')), const Offset(100, 100));
     });
   });
+
+  group('screen reader', () {
+    testWidgets('offers only the moves that go somewhere', (
+      WidgetTester tester,
+    ) async {
+      await tester.pumpWidget(
+        host(children: <ReorderGridTile>[box('a'), box('b'), box('c')]),
+      );
+
+      expect(moveLabels(tester, 'a'), <String>[
+        'Move right',
+        'Move to the end',
+      ]);
+      expect(moveLabels(tester, 'b'), <String>[
+        'Move to the start',
+        'Move left',
+        'Move right',
+        'Move to the end',
+      ]);
+      expect(moveLabels(tester, 'c'), <String>[
+        'Move to the start',
+        'Move left',
+      ]);
+    });
+
+    testWidgets('moves the tile and reports it like a drop', (
+      WidgetTester tester,
+    ) async {
+      final List<(int, int)> reorders = <(int, int)>[];
+
+      await tester.pumpWidget(
+        host(
+          onReorder: (int from, int to) => reorders.add((from, to)),
+          children: <ReorderGridTile>[box('a'), box('b'), box('c')],
+        ),
+      );
+
+      moveActions(tester, 'a')['Move to the end']!();
+      await tester.pumpAndSettle();
+
+      expect(reorders, <(int, int)>[(0, 2)]);
+      expect(tester.getTopLeft(boxFinder('b')), Offset.zero);
+      expect(tester.getTopLeft(boxFinder('a')), const Offset(200, 0));
+    });
+
+    testWidgets('offers no moves when reordering is disabled', (
+      WidgetTester tester,
+    ) async {
+      await tester.pumpWidget(
+        host(
+          enableReorder: false,
+          children: <ReorderGridTile>[box('a'), box('b')],
+        ),
+      );
+
+      expect(moveSemantics(), findsNothing);
+    });
+  });
+
+  group('auto-scroll', () {
+    testWidgets('scrolls while the pointer rests near the viewport edge', (
+      WidgetTester tester,
+    ) async {
+      final ScrollController controller = ScrollController();
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(scrollingHost(controller: controller));
+
+      final TestGesture gesture = await beginDrag(tester, 't0');
+      await gesture.moveTo(const Offset(50, 290));
+      for (int frame = 0; frame < 10; frame++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+
+      expect(controller.offset, greaterThan(0));
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('stays put while the pointer is away from the edges', (
+      WidgetTester tester,
+    ) async {
+      final ScrollController controller = ScrollController();
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(scrollingHost(controller: controller));
+
+      final TestGesture gesture = await beginDrag(tester, 't0');
+      await gesture.moveTo(const Offset(150, 150));
+      for (int frame = 0; frame < 10; frame++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+
+      expect(controller.offset, 0);
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('re-aims the preview as the grid scrolls under the pointer', (
+      WidgetTester tester,
+    ) async {
+      final ScrollController controller = ScrollController();
+      addTearDown(controller.dispose);
+      final List<(int, int)> reorders = <(int, int)>[];
+
+      await tester.pumpWidget(
+        scrollingHost(
+          controller: controller,
+          onReorder: (int from, int to) => reorders.add((from, to)),
+        ),
+      );
+
+      final TestGesture gesture = await beginDrag(tester, 't0');
+      await gesture.moveTo(const Offset(50, 290));
+      await tester.pumpAndSettle();
+      expect(controller.offset, controller.position.maxScrollExtent);
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(reorders.single.$1, 0);
+      expect(reorders.single.$2, greaterThan(8));
+    });
+
+    testWidgets('holds the other tiles still while the edge scrolls', (
+      WidgetTester tester,
+    ) async {
+      final ScrollController controller = ScrollController();
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(scrollingHost(controller: controller));
+      Offset inGrid(String id) =>
+          tester.getTopLeft(boxFinder(id)) -
+          tester.getTopLeft(find.byType(ReorderGrid));
+
+      final TestGesture gesture = await beginDrag(tester, 't0');
+      await gesture.moveTo(const Offset(50, 290));
+      final List<Offset> t1Positions = <Offset>[];
+      for (int frame = 0; frame < 8; frame++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        t1Positions.add(inGrid('t1'));
+      }
+
+      expect(controller.offset, greaterThan(0));
+      expect(controller.offset, lessThan(controller.position.maxScrollExtent));
+      expect(t1Positions.toSet(), <Offset>{const Offset(100, 0)});
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('scrolls the same distance on every frame', (
+      WidgetTester tester,
+    ) async {
+      final ScrollController controller = ScrollController();
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(scrollingHost(controller: controller));
+
+      final TestGesture gesture = await beginDrag(tester, 't0');
+      await gesture.moveTo(const Offset(50, 290));
+      await tester.pump(const Duration(milliseconds: 16));
+      final List<double> steps = <double>[];
+      double previous = controller.offset;
+      for (int frame = 0; frame < 8; frame++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        steps.add(controller.offset - previous);
+        previous = controller.offset;
+      }
+
+      // 10px from the edge is 38/48 into the zone: 712.5px/s, 11.4px a frame.
+      expect(steps, everyElement(closeTo(11.4, 0.001)));
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('lands where the tile is when dropped mid-scroll', (
+      WidgetTester tester,
+    ) async {
+      final ScrollController controller = ScrollController();
+      addTearDown(controller.dispose);
+      final List<(int, int)> reorders = <(int, int)>[];
+
+      await tester.pumpWidget(
+        scrollingHost(
+          controller: controller,
+          onReorder: (int from, int to) => reorders.add((from, to)),
+        ),
+      );
+
+      final TestGesture gesture = await beginDrag(tester, 't0');
+      await gesture.moveTo(const Offset(50, 150));
+      await tester.pump();
+      await gesture.moveTo(const Offset(50, 290));
+      for (int frame = 0; frame < 8; frame++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      expect(controller.offset, lessThan(controller.position.maxScrollExtent));
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(reorders.single, (0, 12));
+    });
+  });
+}
+
+Finder moveSemantics() => find.byWidgetPredicate(
+  (Widget widget) =>
+      widget is Semantics &&
+      (widget.properties.customSemanticsActions?.isNotEmpty ?? false),
+);
+
+Map<String, VoidCallback> moveActions(WidgetTester tester, String id) {
+  final Semantics semantics = tester.widget<Semantics>(
+    find.ancestor(of: boxFinder(id), matching: moveSemantics()),
+  );
+  return <String, VoidCallback>{
+    for (final MapEntry<CustomSemanticsAction, VoidCallback> entry
+        in semantics.properties.customSemanticsActions!.entries)
+      entry.key.label!: entry.value,
+  };
+}
+
+List<String> moveLabels(WidgetTester tester, String id) =>
+    moveActions(tester, id).keys.toList();
+
+/// A 4×5 grid of 100 px cells inside a 300 px viewport, so two rows start
+/// off-screen.
+Widget scrollingHost({
+  required ScrollController controller,
+  ReorderGridCallback? onReorder,
+}) {
+  return MaterialApp(
+    home: Scaffold(
+      body: Align(
+        alignment: Alignment.topLeft,
+        child: SizedBox(
+          width: 400,
+          height: 300,
+          child: SingleChildScrollView(
+            controller: controller,
+            child: ReorderGrid.count(
+              crossAxisCount: 4,
+              mainAxisSpacing: 0,
+              crossAxisSpacing: 0,
+              enableHapticFeedback: false,
+              onReorder: onReorder,
+              children: <ReorderGridTile>[
+                for (int i = 0; i < 20; i++) box('t$i'),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 }
