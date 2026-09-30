@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1
+
+- **Sombra mais suave no arraste.** O tile levantado troca a elevacao 8 do
+  Material por uma sombra clara (desfoque 16, 5% de preto), recolhida
+  e deslocada para baixo, que sobe junto com o tile. A elevacao deixava um
+  halo escuro em volta do card, visivel atraves das partes transparentes do
+  tile. O tile sobe 2% em vez de 5%.
+
 ## 0.6.0
 
 - **Cor do lugar vazio.** `placeholderColor` pinta, sem contorno, o espaco que

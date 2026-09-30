@@ -13,10 +13,14 @@ import 'package:reorder_grid/src/grid_position.dart';
 import 'package:reorder_grid/src/reorder_grid_tile.dart';
 
 /// Scale applied to the tile floating under the pointer while dragging.
-const double _kFeedbackScale = 1.05;
+const double _kFeedbackScale = 1.02;
 
-/// Elevation of the floating tile while dragging.
-const double _kFeedbackElevation = 8.0;
+/// Soft shadow under the floating tile while dragging: wide, faint and pulled
+/// in and down, so it pools under the tile instead of haloing its top edge.
+const double _kFeedbackShadowBlur = 16.0;
+const double _kFeedbackShadowOffset = 8.0;
+const double _kFeedbackShadowSpread = -8.0;
+const double _kFeedbackShadowOpacity = 0.05;
 
 /// How long the tile takes to lift off when a drag starts, and to settle back
 /// down when it lands.
@@ -816,11 +820,25 @@ class _ReorderGridState extends State<ReorderGrid>
         builder: (BuildContext context, double lift, Widget? child) {
           return Transform.scale(
             scale: 1.0 + (_kFeedbackScale - 1.0) * lift,
-            child: Material(
-              elevation: _kFeedbackElevation * lift,
-              color: Colors.transparent,
-              borderRadius: radius,
-              child: child,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                borderRadius: radius,
+                boxShadow: <BoxShadow>[
+                  BoxShadow(
+                    color: Colors.black.withValues(
+                      alpha: _kFeedbackShadowOpacity * lift,
+                    ),
+                    blurRadius: _kFeedbackShadowBlur * lift,
+                    offset: Offset(0, _kFeedbackShadowOffset * lift),
+                    spreadRadius: _kFeedbackShadowSpread * lift,
+                  ),
+                ],
+              ),
+              child: Material(
+                color: Colors.transparent,
+                borderRadius: radius,
+                child: child,
+              ),
             ),
           );
         },
