@@ -64,6 +64,7 @@ Widget host({
   double spacing = 0,
   bool enableReorder = true,
   bool showSlotBorders = false,
+  Color? placeholderColor,
   Duration duration = const Duration(milliseconds: 220),
   ReorderGridCallback? onReorder,
 }) {
@@ -80,6 +81,7 @@ Widget host({
             enableReorder: enableReorder,
             enableHapticFeedback: false,
             showSlotBorders: showSlotBorders,
+            placeholderColor: placeholderColor,
             animationDuration: duration,
             onReorder: onReorder,
             children: children,
@@ -590,6 +592,39 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(placeholder, findsNothing);
+    });
+
+    testWidgets('paints the placeholder flat in the given colour', (
+      WidgetTester tester,
+    ) async {
+      const Color neutral = Color(0x0D000000);
+      await tester.pumpWidget(
+        host(
+          columns: 2,
+          width: 200,
+          placeholderColor: neutral,
+          children: <ReorderGridTile>[box('a'), box('b'), box('c'), box('d')],
+        ),
+      );
+
+      final TestGesture gesture = await beginDrag(tester, 'd');
+      await tester.pumpAndSettle();
+
+      final BoxDecoration decoration =
+          tester
+                  .widget<DecoratedBox>(
+                    find.descendant(
+                      of: find.byType(ReorderGrid),
+                      matching: find.byType(DecoratedBox),
+                    ),
+                  )
+                  .decoration
+              as BoxDecoration;
+      expect(decoration.color, neutral);
+      expect(decoration.border, isNull);
+
+      await gesture.up();
+      await tester.pumpAndSettle();
     });
 
     testWidgets('ignores drags when reordering is disabled', (

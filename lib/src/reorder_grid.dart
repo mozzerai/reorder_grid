@@ -71,6 +71,7 @@ class ReorderGrid extends StatefulWidget {
     this.enableHapticFeedback = true,
     this.showSlotBorders = false,
     this.slotBorderColor,
+    this.placeholderColor,
     this.onReorder,
     this.borderRadius = 8.0,
     this.animationDuration = const Duration(milliseconds: 220),
@@ -114,6 +115,11 @@ class ReorderGrid extends StatefulWidget {
   /// Colour of the empty-slot outlines. Defaults to the theme's
   /// `colorScheme.outlineVariant`.
   final Color? slotBorderColor;
+
+  /// Fill of the slot a carried tile leaves behind, drawn flat with no
+  /// outline. Defaults to a tint of the theme's `colorScheme.primary` with a
+  /// primary outline.
+  final Color? placeholderColor;
 
   /// Called after a drop, or an accessibility move action, that changed the
   /// tile's position.
@@ -824,6 +830,12 @@ class _ReorderGridState extends State<ReorderGrid>
   }
 
   Widget _buildDropPlaceholder(BuildContext context, BorderRadius radius) {
+    final Color? flat = widget.placeholderColor;
+    if (flat != null) {
+      return DecoratedBox(
+        decoration: BoxDecoration(color: flat, borderRadius: radius),
+      );
+    }
     final Color accent = Theme.of(context).colorScheme.primary;
     return DecoratedBox(
       decoration: BoxDecoration(

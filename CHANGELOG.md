@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0
+
+- **Cor do lugar vazio.** `placeholderColor` pinta, sem contorno, o espaco que
+  o tile carregado deixa. Sem ele, continua o tom da cor primaria do tema com
+  contorno, como antes.
+
 ## 0.5.0
 
 Sem mudanca de API.
